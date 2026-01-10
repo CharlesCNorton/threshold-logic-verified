@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Coq
+*.vo
+*.vok
+*.vos
+*.glob
+*.aux
+.lia.cache
+.nia.cache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+checkpoints/
+logs/
+*.pt
+*.pth
