@@ -114,14 +114,15 @@ class ThresholdNetwork(nn.Module):
 
     def forward_discrete(self, x):
         """Forward pass with explicitly discretized weights."""
+        device = x.device
         w1, b1 = self.layer1.get_discrete_weights()
         w2, b2 = self.layer2.get_discrete_weights()
         w3, b3 = self.output.get_discrete_weights()
 
         x = x.float()
-        x = (torch.nn.functional.linear(x, w1.float(), b1.float()) >= 0).float()
-        x = (torch.nn.functional.linear(x, w2.float(), b2.float()) >= 0).float()
-        x = (torch.nn.functional.linear(x, w3.float(), b3.float()) >= 0).float()
+        x = (torch.nn.functional.linear(x, w1.float().to(device), b1.float().to(device)) >= 0).float()
+        x = (torch.nn.functional.linear(x, w2.float().to(device), b2.float().to(device)) >= 0).float()
+        x = (torch.nn.functional.linear(x, w3.float().to(device), b3.float().to(device)) >= 0).float()
         return x.squeeze(-1)
 
     def l1_loss(self):
