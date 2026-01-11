@@ -1,27 +1,10 @@
-(** * Constructive Proof of Parity Network Correctness *)
-
-(**
-   This proof explains WHY the pruned threshold network computes parity,
-   not just THAT it does.
-
-   Key insight discovered by analysis:
-   - L2-N0 always fires (bias dominates)
-   - L2-N2 always fires (bias dominates)
-   - L2-N1 fires iff Hamming weight is EVEN (parity discriminator)
-   - Output = L2-N0 + L2-N2 - L2-N1 - 2 >= 0 = 1 + 1 - L2-N1 - 2 >= 0 = -L2-N1 >= 0
-   - So output fires iff L2-N1 is OFF, i.e., iff HW is ODD = parity
-*)
-
 Require Import Coq.Bool.Bool.
 Require Import Coq.ZArith.ZArith.
 Require Import Coq.Lists.List.
-Require Import Coq.Arith.PeanoNat.
 Require Import Lia.
 Import ListNotations.
 
 Open Scope Z_scope.
-
-(** ** Core Definitions *)
 
 Definition bit := bool.
 Definition weight := Z.
@@ -37,28 +20,57 @@ Fixpoint dot (ws : list weight) (xs : list bit) : Z :=
   | w :: ws', x :: xs' => (if x then w else 0) + dot ws' xs'
   end.
 
+Fixpoint sum_negative (ws : list weight) : Z :=
+  match ws with
+  | [] => 0
+  | w :: ws' => (if Z.ltb w 0 then w else 0) + sum_negative ws'
+  end.
+
+Fixpoint sum_positive (ws : list weight) : Z :=
+  match ws with
+  | [] => 0
+  | w :: ws' => (if Z.gtb w 0 then w else 0) + sum_positive ws'
+  end.
+
+Lemma gtb_false_le : forall a b, Z.gtb a b = false -> a <= b.
+Proof. intros. rewrite Z.gtb_ltb in H. apply Z.ltb_ge. exact H. Qed.
+
+Lemma dot_lower_bound : forall ws xs,
+  length ws = length xs ->
+  sum_negative ws <= dot ws xs.
+Proof.
+  induction ws as [| w ws' IH]; intros xs Hlen.
+  - simpl. lia.
+  - destruct xs as [| x xs']; simpl in Hlen; try lia.
+    injection Hlen as Hlen'. simpl.
+    specialize (IH xs' Hlen').
+    destruct x; destruct (Z.ltb w 0) eqn:Hneg.
+    + apply Z.ltb_lt in Hneg. lia.
+    + apply Z.ltb_nlt in Hneg. lia.
+    + apply Z.ltb_lt in Hneg. lia.
+    + apply Z.ltb_nlt in Hneg. lia.
+Qed.
+
 Definition neuron (ws : list weight) (b : bias) (xs : list bit) : bit :=
   heaviside (dot ws xs + b).
 
+Lemma geb_false_lt : forall a b, Z.geb a b = false -> a < b.
+Proof. intros. rewrite Z.geb_leb in H. apply Z.leb_gt. exact H. Qed.
+
+Lemma neuron_always_fires : forall ws b xs,
+  length ws = length xs ->
+  sum_negative ws + b >= 0 ->
+  neuron ws b xs = true.
+Proof.
+  intros ws b xs Hlen Hbound.
+  unfold neuron, heaviside.
+  assert (Hlower := dot_lower_bound ws xs Hlen).
+  destruct (Z.geb (dot ws xs + b) 0) eqn:E; auto.
+  apply geb_false_lt in E. lia.
+Qed.
+
 Definition layer (neurons : list (list weight * bias)) (xs : list bit) : list bit :=
   map (fun wb => neuron (fst wb) (snd wb) xs) neurons.
-
-Fixpoint parity (xs : list bit) : bit :=
-  match xs with
-  | [] => false
-  | x :: xs' => xorb x (parity xs')
-  end.
-
-(** ** Hamming Weight *)
-
-Fixpoint hamming_weight (xs : list bit) : nat :=
-  match xs with
-  | [] => O
-  | true :: xs' => S (hamming_weight xs')
-  | false :: xs' => hamming_weight xs'
-  end.
-
-(** ** Pruned Network Weights *)
 
 Definition layer1_weights : list (list weight * bias) :=
   [ ([1; -1; 1; -1; 1; 1; 1; 1], 0);
@@ -74,21 +86,66 @@ Definition layer1_weights : list (list weight * bias) :=
     ([-1; 1; -1; 1; 1; -1; -1; -1], 2)
   ].
 
-Definition layer2_weights : list (list weight * bias) :=
-  [ ([0; 0; -1; -1; 0; 0; -1; 1; -1; 1; -1], 30);   (* L2-N0: bias=30 *)
-    ([1; -1; 1; 1; -1; 1; -1; 1; 1; 1; 1], -3);     (* L2-N1: parity discriminator *)
-    ([1; 0; 0; 0; 0; 1; 0; 0; 0; 0; 1], 20)         (* L2-N2: bias=20 *)
-  ].
+Definition l2n0_weights : list weight := [0; 0; -1; -1; 0; 0; -1; 1; -1; 1; -1].
+Definition l2n0_bias : bias := 30.
 
-Definition output_weights : list weight * bias :=
-  ([1; -1; 1], -2).  (* h2[0] - h2[1] + h2[2] - 2 >= 0 *)
+Definition l1_output (xs : list bit) : list bit := layer layer1_weights xs.
+
+Lemma l1_output_length : forall xs,
+  length xs = 8%nat -> length (l1_output xs) = 11%nat.
+Proof. intros. unfold l1_output, layer. rewrite map_length. reflexivity. Qed.
+
+Lemma l2n0_sum_neg : sum_negative l2n0_weights = -5.
+Proof. reflexivity. Qed.
+
+Theorem L2N0_always_fires : forall xs,
+  length xs = 8%nat ->
+  neuron l2n0_weights l2n0_bias (l1_output xs) = true.
+Proof.
+  intros xs Hlen.
+  apply neuron_always_fires.
+  - rewrite l1_output_length by exact Hlen. reflexivity.
+  - rewrite l2n0_sum_neg. unfold l2n0_bias. lia.
+Qed.
+
+Definition l2n2_weights : list weight := [1; 0; 0; 0; 0; 1; 0; 0; 0; 0; 1].
+Definition l2n2_bias : bias := 20.
+
+Lemma l2n2_sum_neg : sum_negative l2n2_weights = 0.
+Proof. reflexivity. Qed.
+
+Theorem L2N2_always_fires : forall xs,
+  length xs = 8%nat ->
+  neuron l2n2_weights l2n2_bias (l1_output xs) = true.
+Proof.
+  intros xs Hlen.
+  apply neuron_always_fires.
+  - rewrite l1_output_length by exact Hlen. reflexivity.
+  - rewrite l2n2_sum_neg. unfold l2n2_bias. lia.
+Qed.
+
+Definition l2n1_weights : list weight := [1; -1; 1; 1; -1; 1; -1; 1; 1; 1; 1].
+Definition l2n1_bias : bias := -3.
+
+Definition layer2_weights : list (list weight * bias) :=
+  [(l2n0_weights, l2n0_bias); (l2n1_weights, l2n1_bias); (l2n2_weights, l2n2_bias)].
+
+Definition output_weights : list weight * bias := ([1; -1; 1], -2).
 
 Definition network (xs : list bit) : bit :=
   let h1 := layer layer1_weights xs in
   let h2 := layer layer2_weights h1 in
   neuron (fst output_weights) (snd output_weights) h2.
 
-(** ** Input Generation *)
+Definition l2_activations (xs : list bit) : list bit :=
+  layer layer2_weights (l1_output xs).
+
+Fixpoint hamming_weight (xs : list bit) : nat :=
+  match xs with
+  | [] => O
+  | true :: xs' => S (hamming_weight xs')
+  | false :: xs' => hamming_weight xs'
+  end.
 
 Fixpoint all_inputs (n : nat) : list (list bit) :=
   match n with
@@ -96,207 +153,76 @@ Fixpoint all_inputs (n : nat) : list (list bit) :=
   | S n' => map (cons false) (all_inputs n') ++ map (cons true) (all_inputs n')
   end.
 
-(** ** The Three Key Lemmas *)
-
-(** Lemma 1: L2-N0 always fires.
-    Pre-activation is always >= 26 (we verify the minimum). *)
-Definition l2n0_preact (xs : list bit) : Z :=
-  let h1 := layer layer1_weights xs in
-  dot (fst (nth 0 layer2_weights ([], 0))) h1 + snd (nth 0 layer2_weights ([], 0)).
-
-Definition l2n0_always_positive : bool :=
-  forallb (fun xs => Z.geb (l2n0_preact xs) 0) (all_inputs 8).
-
-Lemma L2N0_always_fires :
-  l2n0_always_positive = true.
-Proof. vm_compute. reflexivity. Qed.
-
-(** Lemma 2: L2-N2 always fires.
-    Pre-activation is always >= 21 (we verify the minimum). *)
-Definition l2n2_preact (xs : list bit) : Z :=
-  let h1 := layer layer1_weights xs in
-  dot (fst (nth 2 layer2_weights ([], 0))) h1 + snd (nth 2 layer2_weights ([], 0)).
-
-Definition l2n2_always_positive : bool :=
-  forallb (fun xs => Z.geb (l2n2_preact xs) 0) (all_inputs 8).
-
-Lemma L2N2_always_fires :
-  l2n2_always_positive = true.
-Proof. vm_compute. reflexivity. Qed.
-
-(** Lemma 3: L2-N1 is the parity discriminator.
-    Fires iff Hamming weight is EVEN. *)
-Definition l2n1_neuron (xs : list bit) : bit :=
-  let h1 := layer layer1_weights xs in
-  neuron (fst (nth 1 layer2_weights ([], 0))) (snd (nth 1 layer2_weights ([], 0))) h1.
-
-Definition l2n1_matches_even_hw : bool :=
-  forallb (fun xs => Bool.eqb (l2n1_neuron xs) (Nat.even (hamming_weight xs)))
+Definition check_l2n1 : bool :=
+  forallb (fun xs => Bool.eqb (neuron l2n1_weights l2n1_bias (l1_output xs))
+                              (Nat.even (hamming_weight xs)))
           (all_inputs 8).
 
-Lemma L2N1_is_parity_discriminator :
-  l2n1_matches_even_hw = true.
+Lemma L2N1_is_even : check_l2n1 = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** ** Algebraic Derivation of Correctness *)
-
-(** Helper: extract L2 activations *)
-Definition l2_activations (xs : list bit) : list bit :=
-  layer layer2_weights (layer layer1_weights xs).
-
-(** The output formula: h2[0] - h2[1] + h2[2] - 2 >= 0 *)
-Lemma output_formula : forall xs,
-  network xs = heaviside (
-    (if nth 0 (l2_activations xs) false then 1 else 0) -
-    (if nth 1 (l2_activations xs) false then 1 else 0) +
-    (if nth 2 (l2_activations xs) false then 1 else 0) - 2
-  ).
+Lemma all_inputs_length : forall n xs, In xs (all_inputs n) -> length xs = n.
 Proof.
-  intro xs. unfold network, l2_activations.
-  unfold neuron at 1. unfold output_weights. simpl fst. simpl snd.
-  f_equal. unfold dot.
-  destruct (layer layer2_weights (layer layer1_weights xs)) as [|h0 [|h1 [|h2 rest]]] eqn:E.
-  - simpl. reflexivity.
-  - simpl. destruct h0; reflexivity.
-  - simpl. destruct h0; destruct h1; reflexivity.
-  - simpl. destruct h0; destruct h1; destruct h2; reflexivity.
+  induction n; intros xs Hin; simpl in *.
+  - destruct Hin as [<- | []]. reflexivity.
+  - apply in_app_or in Hin. destruct Hin as [Hin | Hin];
+    apply in_map_iff in Hin; destruct Hin as [ys [<- Hys]];
+    simpl; f_equal; apply IHn; exact Hys.
 Qed.
 
-(** When L2-N0 and L2-N2 both fire, output = NOT(L2-N1) *)
-Lemma output_when_n0_n2_fire : forall h0 h1 h2 : bool,
-  h0 = true -> h2 = true ->
-  heaviside ((if h0 then 1 else 0) - (if h1 then 1 else 0) + (if h2 then 1 else 0) - 2)
-  = negb h1.
+Lemma L2N1_equals_even : forall xs,
+  In xs (all_inputs 8) ->
+  neuron l2n1_weights l2n1_bias (l1_output xs) = Nat.even (hamming_weight xs).
 Proof.
-  intros h0 h1 h2 H0 H2. rewrite H0, H2.
-  destruct h1; unfold heaviside; simpl; reflexivity.
+  intros xs Hin.
+  assert (Hv := L2N1_is_even). unfold check_l2n1 in Hv.
+  rewrite forallb_forall in Hv. specialize (Hv xs Hin).
+  apply Bool.eqb_prop in Hv. exact Hv.
 Qed.
 
-(** ** Main Theorem *)
-
-(** Parity equals negation of even-ness *)
-Lemma xorb_true_negb : forall b, xorb true b = negb b.
-Proof. destruct b; reflexivity. Qed.
-
-Lemma xorb_false_id : forall b, xorb false b = b.
-Proof. destruct b; reflexivity. Qed.
+Fixpoint parity (xs : list bit) : bit :=
+  match xs with
+  | [] => false
+  | x :: xs' => xorb x (parity xs')
+  end.
 
 Lemma odd_succ : forall n, Nat.odd (S n) = negb (Nat.odd n).
-Proof.
-  induction n; simpl; auto.
-  rewrite IHn. rewrite Bool.negb_involutive. reflexivity.
-Qed.
+Proof. induction n; simpl; auto. rewrite IHn. rewrite Bool.negb_involutive. reflexivity. Qed.
 
-Lemma parity_is_odd : forall xs,
-  parity xs = Nat.odd (hamming_weight xs).
+Lemma parity_is_odd : forall xs, parity xs = Nat.odd (hamming_weight xs).
 Proof.
   induction xs as [| x xs' IH]; simpl.
   - reflexivity.
   - destruct x; simpl.
-    + (* parity (true :: xs') = xorb true (parity xs') *)
-      rewrite IH. rewrite odd_succ. simpl. reflexivity.
+    + rewrite IH. rewrite odd_succ. reflexivity.
     + exact IH.
 Qed.
 
-Lemma odd_is_negb_even : forall n,
-  Nat.odd n = negb (Nat.even n).
-Proof.
-  intro n. unfold Nat.odd. reflexivity.
-Qed.
+Lemma odd_negb_even : forall n, Nat.odd n = negb (Nat.even n).
+Proof. intro n. unfold Nat.odd. reflexivity. Qed.
 
-(** Verified assertion: L2-N0 fires for all inputs *)
-Definition check_l2n0_fires : bool :=
-  forallb (fun xs => nth 0 (l2_activations xs) false) (all_inputs 8).
+Lemma l2_structure : forall xs,
+  layer layer2_weights (l1_output xs) =
+  [neuron l2n0_weights l2n0_bias (l1_output xs);
+   neuron l2n1_weights l2n1_bias (l1_output xs);
+   neuron l2n2_weights l2n2_bias (l1_output xs)].
+Proof. reflexivity. Qed.
 
-Lemma l2n0_fires_verified : check_l2n0_fires = true.
-Proof. vm_compute. reflexivity. Qed.
-
-(** Verified assertion: L2-N2 fires for all inputs *)
-Definition check_l2n2_fires : bool :=
-  forallb (fun xs => nth 2 (l2_activations xs) false) (all_inputs 8).
-
-Lemma l2n2_fires_verified : check_l2n2_fires = true.
-Proof. vm_compute. reflexivity. Qed.
-
-(** Verified assertion: L2-N1 equals Nat.even(hamming_weight) *)
-Definition check_l2n1_is_even : bool :=
-  forallb (fun xs => Bool.eqb (nth 1 (l2_activations xs) false)
-                              (Nat.even (hamming_weight xs)))
-          (all_inputs 8).
-
-Lemma l2n1_is_even_verified : check_l2n1_is_even = true.
-Proof. vm_compute. reflexivity. Qed.
-
-(** The network computes parity because:
-    1. L2-N0 always fires
-    2. L2-N2 always fires
-    3. L2-N1 fires iff HW is even
-    4. Output = NOT(L2-N1) = NOT(even HW) = odd HW = parity *)
 Theorem network_computes_parity : forall xs,
   In xs (all_inputs 8) ->
   network xs = parity xs.
 Proof.
   intros xs Hin.
-
-  (* Extract the three structural facts *)
-  assert (H0: nth 0 (l2_activations xs) false = true).
-  { assert (Hv := l2n0_fires_verified).
-    unfold check_l2n0_fires in Hv.
-    rewrite forallb_forall in Hv. apply Hv. exact Hin. }
-
-  assert (H2: nth 2 (l2_activations xs) false = true).
-  { assert (Hv := l2n2_fires_verified).
-    unfold check_l2n2_fires in Hv.
-    rewrite forallb_forall in Hv. apply Hv. exact Hin. }
-
-  assert (H1: nth 1 (l2_activations xs) false = Nat.even (hamming_weight xs)).
-  { assert (Hv := l2n1_is_even_verified).
-    unfold check_l2n1_is_even in Hv.
-    rewrite forallb_forall in Hv. specialize (Hv xs Hin).
-    apply Bool.eqb_prop in Hv. exact Hv. }
-
-  (* Algebraic derivation *)
-  rewrite output_formula.
-  rewrite H0, H2, H1.
-  (* Now goal is: heaviside (1 - (if Nat.even ... then 1 else 0) + 1 - 2) = parity xs *)
-  (* Simplify: 1 + 1 - 2 = 0, so this is heaviside (-(if even then 1 else 0)) *)
-  rewrite parity_is_odd, odd_is_negb_even.
-  destruct (Nat.even (hamming_weight xs)); unfold heaviside; simpl; reflexivity.
+  assert (Hlen: length xs = 8%nat) by (apply all_inputs_length; exact Hin).
+  assert (H0: neuron l2n0_weights l2n0_bias (l1_output xs) = true)
+    by (apply L2N0_always_fires; exact Hlen).
+  assert (H2: neuron l2n2_weights l2n2_bias (l1_output xs) = true)
+    by (apply L2N2_always_fires; exact Hlen).
+  assert (H1: neuron l2n1_weights l2n1_bias (l1_output xs) = Nat.even (hamming_weight xs))
+    by (apply L2N1_equals_even; exact Hin).
+  unfold network. fold l1_output. rewrite l2_structure.
+  rewrite H0, H1, H2.
+  unfold neuron, output_weights, dot, heaviside. simpl.
+  rewrite parity_is_odd, odd_negb_even.
+  destruct (Nat.even (hamming_weight xs)); simpl; reflexivity.
 Qed.
-
-(** ** Summary *)
-
-(**
-   This proof reveals the STRUCTURE of how the network computes parity:
-
-   Layer 1: 11 neurons compute various threshold functions on 8 inputs.
-            Different inputs with the same Hamming weight may produce
-            different L1 activation patterns.
-
-   Layer 2: Three neurons, but only one matters:
-            - L2-N0: Always fires (bias = 30 overwhelms any L1 pattern)
-            - L2-N2: Always fires (bias = 20 overwhelms any L1 pattern)
-            - L2-N1: THE PARITY DISCRIMINATOR
-                     Fires iff input has EVEN Hamming weight
-
-   Output:  Computes: L2-N0 + L2-N2 - L2-N1 - 2 >= 0
-            Since L2-N0 = L2-N2 = 1 always:
-            = 1 + 1 - L2-N1 - 2 >= 0
-            = -L2-N1 >= 0
-            = L2-N1 is OFF
-            = Hamming weight is ODD
-            = parity(input)
-
-   The network effectively learned to:
-   1. Use two "always on" neurons (L2-N0, L2-N2)
-   2. Construct a parity discriminator (L2-N1)
-   3. Wire the output to negate the discriminator
-
-   This proof uses vm_compute only for the three structural lemmas:
-   - L2-N0 always fires
-   - L2-N2 always fires
-   - L2-N1 equals Nat.even(hamming_weight)
-
-   The final theorem is derived ALGEBRAICALLY from these facts,
-   showing WHY network(xs) = parity(xs), not just THAT it holds.
-*)
