@@ -177,6 +177,167 @@ Definition output_concrete (l2 : bit) : bit :=
 Definition parity_concrete (n : nat) (xs : list bit) : bit :=
   output_concrete (L2_concrete n xs).
 
+(** ** Lemmas for concrete implementation *)
+
+(** L1 neuron k fires iff HW >= k *)
+Lemma L1_neuron_correct : forall k xs,
+  neuron (ones (length xs)) (- Z.of_nat k) xs = (k <=? hamming_weight xs)%nat.
+Proof.
+  intros k xs.
+  unfold neuron, heaviside.
+  rewrite dot_ones_eq_hw.
+  set (h := hamming_weight xs).
+  destruct (Nat.le_gt_cases k h) as [Hle | Hgt].
+  - (* k <= h, so neuron fires *)
+    assert (Hgeb: (Z.of_nat h + - Z.of_nat k >=? 0) = true).
+    { apply Z.geb_le. lia. }
+    rewrite Hgeb.
+    symmetry. apply Nat.leb_le. exact Hle.
+  - (* k > h, so neuron doesn't fire *)
+    assert (Hgeb: (Z.of_nat h + - Z.of_nat k >=? 0) = false).
+    { destruct (Z.of_nat h + - Z.of_nat k >=? 0) eqn:E; auto.
+      apply Z.geb_le in E. lia. }
+    rewrite Hgeb.
+    symmetry. apply Nat.leb_gt. exact Hgt.
+Qed.
+
+(** L1_concrete produces threshold indicators *)
+Lemma L1_concrete_nth : forall n k xs,
+  (k <= n)%nat ->
+  nth k (L1_concrete n xs) false = (k <=? hamming_weight xs)%nat.
+Proof.
+  intros n k xs Hk.
+  unfold L1_concrete.
+  remember (fun j : nat => neuron (ones (length xs)) (- Z.of_nat j) xs) as f.
+  assert (Hseq: nth k (seq 0%nat (S n)) 0%nat = k).
+  { apply seq_nth. lia. }
+  assert (Hbnd: (k < length (seq 0%nat (S n)))%nat).
+  { rewrite seq_length. lia. }
+  erewrite nth_indep by (rewrite map_length; exact Hbnd).
+  rewrite (map_nth f (seq 0%nat (S n)) 0%nat).
+  rewrite Hseq. subst f. simpl.
+  apply L1_neuron_correct.
+Qed.
+
+Lemma L1_concrete_length : forall n xs,
+  length (L1_concrete n xs) = S n.
+Proof.
+  intros. unfold L1_concrete.
+  rewrite map_length, seq_length. reflexivity.
+Qed.
+
+(** Alternating dot product with threshold pattern *)
+Lemma alt_weights_length : forall n sign,
+  length (alt_weights n sign) = n.
+Proof.
+  induction n; intros; simpl; auto.
+Qed.
+
+(** L1 concrete equals abstract threshold list *)
+Lemma L1_concrete_eq : forall n xs,
+  L1_concrete n xs = map (fun k => (k <=? hamming_weight xs)%nat) (seq 0%nat (S n)).
+Proof.
+  intros n xs.
+  apply nth_ext with (d := false) (d' := false).
+  - rewrite L1_concrete_length, map_length, seq_length. reflexivity.
+  - intros i Hi.
+    rewrite L1_concrete_length in Hi.
+    rewrite L1_concrete_nth by lia.
+    assert (Hbnd: (i < length (seq 0%nat (S n)))%nat) by (rewrite seq_length; lia).
+    rewrite nth_indep with (d' := (0%nat <=? hamming_weight xs)%nat)
+      by (rewrite map_length; exact Hbnd).
+    rewrite (map_nth (fun k => (k <=? hamming_weight xs)%nat) (seq 0%nat (S n)) 0%nat).
+    rewrite seq_nth by lia. simpl. reflexivity.
+Qed.
+
+(** Key insight: alternating sum of first (h+1) ones starting with +1 *)
+(** 1 - 1 + 1 - 1 + ... for h+1 terms = 1 if h even, 0 if h odd *)
+
+Fixpoint alt_sum_first (h : nat) : Z :=
+  match h with
+  | O => 1
+  | S h' => (if Nat.even h then 1 else -1) + alt_sum_first h'
+  end.
+
+Lemma even_S : forall n, Nat.even (S n) = negb (Nat.even n).
+Proof.
+  induction n.
+  - reflexivity.
+  - simpl in *. rewrite IHn. symmetry. apply Bool.negb_involutive.
+Qed.
+
+Lemma alt_sum_first_correct : forall h,
+  alt_sum_first h = if Nat.even h then 1 else 0.
+Proof.
+  induction h as [| h' IH].
+  - reflexivity.
+  - change (alt_sum_first (S h')) with ((if Nat.even (S h') then 1 else -1) + alt_sum_first h').
+    rewrite IH. rewrite even_S.
+    destruct (Nat.even h'); reflexivity.
+Qed.
+
+(** Dot product as fold_left *)
+Lemma dot_fold_aux : forall ws xs acc,
+  fold_left Z.add (map (fun p : Z * bit => if snd p then fst p else 0) (combine ws xs)) acc =
+  acc + dot ws xs.
+Proof.
+  induction ws as [| w ws' IH]; intros [| x xs'] acc; simpl; try lia.
+  rewrite IH. destruct x; lia.
+Qed.
+
+Lemma dot_alt_ind : forall ws xs,
+  dot ws xs = fold_left Z.add (map (fun p : Z * bit => if snd p then fst p else 0) (combine ws xs)) 0.
+Proof.
+  intros. rewrite dot_fold_aux. lia.
+Qed.
+
+(** Dot with appended false is unchanged (when lengths match) *)
+Lemma dot_app_false : forall ws w xs,
+  length ws = length xs ->
+  dot (ws ++ [w]) (xs ++ [false]) = dot ws xs.
+Proof.
+  induction ws as [| w' ws' IHws]; intros w xs Hlen.
+  - destruct xs; simpl in *; try discriminate. reflexivity.
+  - destruct xs as [| x xs']; simpl in *; try discriminate.
+    injection Hlen as Hlen'. rewrite IHws by exact Hlen'. reflexivity.
+Qed.
+
+(** Dot product of alt_weights with threshold list equals alt_sum_first.
+    This connects the concrete neuron computation to the abstract alternating sum.
+    The proof requires careful handling of the sequence structure. *)
+Lemma dot_alt_threshold : forall n h,
+  (h <= n)%nat ->
+  dot (alt_weights (S n) true) (map (fun k => (k <=? h)%nat) (seq 0%nat (S n))) =
+  alt_sum_first h.
+Proof.
+  (* The key insight:
+     - The threshold list is [true, true, ..., true, false, ..., false] with h+1 trues
+     - Combined with alternating weights [1,-1,1,-1,...], dot = sum of first h+1 alternating values
+     - By alt_sum_first_correct, this equals 1 if h even, 0 if h odd *)
+Admitted.
+
+(** Direct approach: prove for the specific L1 output *)
+Lemma L2_concrete_correct : forall n xs,
+  length xs = n ->
+  (hamming_weight xs <= n)%nat ->
+  L2_concrete n xs = Nat.even (hamming_weight xs).
+Proof.
+  intros n xs Hlen Hbound.
+  unfold L2_concrete, neuron, heaviside.
+  rewrite L1_concrete_eq.
+  set (h := hamming_weight xs).
+  rewrite dot_alt_threshold by exact Hbound.
+  rewrite alt_sum_first_correct.
+  destruct (Nat.even h); simpl; reflexivity.
+Qed.
+
+(** Output concrete correctly negates *)
+Lemma output_concrete_correct : forall b,
+  output_concrete b = negb b.
+Proof.
+  intros []; unfold output_concrete, heaviside; simpl; reflexivity.
+Qed.
+
 (** The concrete implementation equals the abstract one *)
 Theorem concrete_eq_abstract : forall n xs,
   length xs = n ->
@@ -185,14 +346,11 @@ Theorem concrete_eq_abstract : forall n xs,
 Proof.
   intros n xs Hlen Hbound.
   unfold parity_concrete, parity_network.
-  unfold output_concrete, output, L2_concrete, L2_fires.
-  (* This requires proving that the concrete neurons compute the same thing
-     as the abstract definitions. The key steps are:
-     1. L1_concrete produces [HW>=0, HW>=1, ..., HW>=n]
-     2. dot(alt_weights, L1_concrete) - 1 >= 0 iff HW even
-     3. output_concrete negates correctly
-  *)
-Admitted. (* Proof requires detailed case analysis *)
+  rewrite output_concrete_correct.
+  unfold output, L2_fires.
+  f_equal.
+  apply L2_concrete_correct; auto.
+Qed.
 
 (** ** Summary *)
 
