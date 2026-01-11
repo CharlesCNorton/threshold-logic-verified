@@ -417,25 +417,21 @@ Theorem L2N1_eq_even_hw : forall x0 x1 x2 x3 x4 x5 x6 x7,
   L2N1 x0 x1 x2 x3 x4 x5 x6 x7 = Nat.even (hamming_weight [x0;x1;x2;x3;x4;x5;x6;x7]).
 Proof.
   intros.
-  unfold L2N1, neuron, heaviside.
-  unfold l1_out.
-  fold (L2N1_preact_actual x0 x1 x2 x3 x4 x5 x6 x7).
+  unfold L2N1, neuron, heaviside, l1_out.
   destruct (Nat.even (hamming_weight [x0;x1;x2;x3;x4;x5;x6;x7])) eqn:Heven.
   - (* even case *)
     assert (Hge := even_HW_fires x0 x1 x2 x3 x4 x5 x6 x7 Heven).
-    unfold L2N1_preact_actual in Hge.
+    unfold L2N1_preact_actual, l1_out in Hge.
     destruct (Z.geb (dot w_l2n1 (layer layer1_weights [x0;x1;x2;x3;x4;x5;x6;x7]) + -3) 0) eqn:E.
     + reflexivity.
-    + rewrite Z.geb_leb in E. apply Z.leb_gt in E.
-      unfold l1_out, layer1_weights in Hge. lia.
+    + rewrite Z.geb_leb in E. apply Z.leb_gt in E. lia.
   - (* odd case *)
     assert (Hodd: Nat.odd (hamming_weight [x0;x1;x2;x3;x4;x5;x6;x7]) = true).
     { unfold Nat.odd. rewrite Heven. reflexivity. }
     assert (Hlt := odd_HW_silent x0 x1 x2 x3 x4 x5 x6 x7 Hodd).
-    unfold L2N1_preact_actual in Hlt.
+    unfold L2N1_preact_actual, l1_out in Hlt.
     destruct (Z.geb (dot w_l2n1 (layer layer1_weights [x0;x1;x2;x3;x4;x5;x6;x7]) + -3) 0) eqn:E.
-    + rewrite Z.geb_leb in E. apply Z.leb_le in E.
-      unfold l1_out, layer1_weights in Hlt. lia.
+    + rewrite Z.geb_leb in E. apply Z.leb_le in E. lia.
     + reflexivity.
 Qed.
 
@@ -453,25 +449,35 @@ Definition network (x0 x1 x2 x3 x4 x5 x6 x7 : bit) : bit :=
 
 (** ** Parity Properties *)
 
+Lemma odd_S : forall n, Nat.odd (S n) = negb (Nat.odd n).
+Proof.
+  induction n; simpl; auto.
+  rewrite IHn. rewrite Bool.negb_involutive. reflexivity.
+Qed.
+
 Lemma parity_odd : forall xs, parity xs = Nat.odd (hamming_weight xs).
 Proof.
   induction xs; simpl.
   - reflexivity.
   - destruct a; simpl.
-    + rewrite IHxs. destruct (Nat.odd (hamming_weight xs)); reflexivity.
+    + rewrite IHxs. rewrite odd_S. reflexivity.
     + exact IHxs.
 Qed.
 
 (** ** Final Theorem *)
 
+Lemma L2N1_direct : forall x0 x1 x2 x3 x4 x5 x6 x7,
+  neuron w_l2n1 (-3) (l1_out x0 x1 x2 x3 x4 x5 x6 x7) =
+  Nat.even (hamming_weight [x0;x1;x2;x3;x4;x5;x6;x7]).
+Proof. intros. apply L2N1_eq_even_hw. Qed.
+
 Theorem network_correct : forall x0 x1 x2 x3 x4 x5 x6 x7,
   network x0 x1 x2 x3 x4 x5 x6 x7 = parity [x0;x1;x2;x3;x4;x5;x6;x7].
 Proof.
   intros.
-  unfold network, layer2, neuron, w_out, dot, heaviside.
-  rewrite L2N0_always_fires, L2N2_always_fires.
-  unfold L2N1. fold (l1_out x0 x1 x2 x3 x4 x5 x6 x7).
-  rewrite L2N1_eq_even_hw.
+  unfold network, layer2.
+  rewrite L2N0_always_fires, L2N2_always_fires, L2N1_direct.
+  unfold neuron, w_out, dot, heaviside.
   rewrite parity_odd.
   unfold Nat.odd.
   destruct (Nat.even (hamming_weight [x0;x1;x2;x3;x4;x5;x6;x7])); reflexivity.
