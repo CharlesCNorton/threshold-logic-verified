@@ -302,19 +302,177 @@ Proof.
     injection Hlen as Hlen'. rewrite IHws by exact Hlen'. reflexivity.
 Qed.
 
-(** Dot product of alt_weights with threshold list equals alt_sum_first.
-    This connects the concrete neuron computation to the abstract alternating sum.
-    The proof requires careful handling of the sequence structure. *)
+Lemma dot_cons : forall w ws x xs,
+  dot (w :: ws) (x :: xs) = (if x then w else 0) + dot ws xs.
+Proof. reflexivity. Qed.
+
+Lemma alt_weights_S : forall n sign,
+  alt_weights (S n) sign = (if sign then 1 else -1) :: alt_weights n (negb sign).
+Proof. reflexivity. Qed.
+
+Lemma repeat_S : forall A (x : A) n,
+  repeat x (S n) = x :: repeat x n.
+Proof. reflexivity. Qed.
+
+Lemma negb_true : negb true = false. Proof. reflexivity. Qed.
+Lemma negb_false : negb false = true. Proof. reflexivity. Qed.
+
+Lemma if_true : forall A (x y : A), (if true then x else y) = x. Proof. reflexivity. Qed.
+Lemma if_false : forall A (x y : A), (if false then x else y) = y. Proof. reflexivity. Qed.
+
+Lemma alt_sum_first_S : forall h,
+  alt_sum_first (S h) = (if Nat.even (S h) then 1 else -1) + alt_sum_first h.
+Proof. reflexivity. Qed.
+
+Lemma dot_alt_prefix : forall h sign,
+  dot (alt_weights (S h) sign) (repeat true (S h)) =
+  if sign then alt_sum_first h else - alt_sum_first h.
+Proof.
+  induction h as [| h' IH]; intros sign.
+  - destruct sign; reflexivity.
+  - rewrite alt_weights_S, repeat_S, dot_cons.
+    destruct sign.
+    + rewrite negb_true.
+      change ((if true then 1 else 0) + dot (alt_weights (S h') false) (repeat true (S h')))
+        with (1 + dot (alt_weights (S h') false) (repeat true (S h'))).
+      rewrite (IH false).
+      rewrite alt_sum_first_S, even_S, alt_sum_first_correct.
+      destruct (Nat.even h'); reflexivity.
+    + rewrite negb_false.
+      change ((if true then (-1) else 0) + dot (alt_weights (S h') true) (repeat true (S h')))
+        with ((-1) + dot (alt_weights (S h') true) (repeat true (S h'))).
+      rewrite (IH true).
+      rewrite alt_sum_first_S, even_S, alt_sum_first_correct.
+      destruct (Nat.even h'); reflexivity.
+Qed.
+
+Lemma nth_repeat' : forall A (x : A) n m d, (n < m)%nat -> nth n (repeat x m) d = x.
+Proof.
+  intros A x n m d Hnm.
+  rewrite nth_indep with (d' := x) by (rewrite repeat_length; lia).
+  apply nth_repeat.
+Qed.
+
+Lemma threshold_map_split : forall n h,
+  (h <= n)%nat ->
+  map (fun k => (k <=? h)%nat) (seq 0 (S n)) =
+  repeat true (S h) ++ repeat false (n - h).
+Proof.
+  intros n h Hle.
+  apply nth_ext with (d := false) (d' := false).
+  - rewrite map_length, seq_length, app_length, !repeat_length. lia.
+  - intros i Hi.
+    rewrite map_length, seq_length in Hi.
+    destruct (Nat.le_gt_cases i h) as [Hile | Higt].
+    + (* i <= h: both sides are true *)
+      assert (Hleb: (i <=? h)%nat = true) by (apply Nat.leb_le; exact Hile).
+      transitivity true.
+      * assert (Hin: (i < length (map (fun k => (k <=? h)%nat) (seq 0 (S n))))%nat).
+        { rewrite map_length, seq_length. lia. }
+        rewrite nth_indep with (d' := true) by exact Hin.
+        rewrite (map_nth (fun k => (k <=? h)%nat) (seq 0 (S n)) 0%nat).
+        rewrite seq_nth by lia. simpl. exact Hleb.
+      * symmetry. rewrite app_nth1 by (rewrite repeat_length; lia).
+        apply nth_repeat'. lia.
+    + (* i > h: both sides are false *)
+      assert (Hleb: (i <=? h)%nat = false) by (apply Nat.leb_gt; lia).
+      transitivity false.
+      * assert (Hin: (i < length (map (fun k => (k <=? h)%nat) (seq 0 (S n))))%nat).
+        { rewrite map_length, seq_length. lia. }
+        rewrite nth_indep with (d' := true) by exact Hin.
+        rewrite (map_nth (fun k => (k <=? h)%nat) (seq 0 (S n)) 0%nat).
+        rewrite seq_nth by lia. simpl. exact Hleb.
+      * symmetry. rewrite app_nth2 by (rewrite repeat_length; lia).
+        rewrite repeat_length.
+        apply nth_repeat'. lia.
+Qed.
+
+(** Dot with repeat false is 0 *)
+Lemma dot_repeat_false : forall ws, dot ws (repeat false (length ws)) = 0.
+Proof.
+  induction ws as [| w ws' IH]; simpl; auto.
+Qed.
+
+Lemma dot_repeat_false' : forall ws n, length ws = n -> dot ws (repeat false n) = 0.
+Proof.
+  intros ws n Hlen. rewrite <- Hlen. apply dot_repeat_false.
+Qed.
+
+(** Split dot product over concatenation *)
+Lemma dot_app : forall ws1 ws2 xs1 xs2,
+  length ws1 = length xs1 ->
+  dot (ws1 ++ ws2) (xs1 ++ xs2) = dot ws1 xs1 + dot ws2 xs2.
+Proof.
+  induction ws1 as [| w ws1' IH]; intros ws2 xs1 xs2 Hlen.
+  - destruct xs1; simpl in *; try discriminate. simpl. lia.
+  - destruct xs1 as [| x xs1']; simpl in *; try discriminate.
+    injection Hlen as Hlen'.
+    rewrite IH by exact Hlen'.
+    destruct x; lia.
+Qed.
+
+(** Alt weights split *)
+Lemma even_S_negb : forall n, Nat.even (S n) = negb (Nat.even n).
+Proof.
+  induction n.
+  - reflexivity.
+  - change (Nat.even (S (S n)) = negb (Nat.even (S n))).
+    change (Nat.even (S (S n))) with (Nat.even n).
+    rewrite IHn.
+    symmetry. apply Bool.negb_involutive.
+Qed.
+
+Lemma alt_weights_app_aux : forall n m sign,
+  alt_weights (n + m) sign = alt_weights n sign ++ alt_weights m (Nat.iter n negb sign).
+Proof.
+  induction n as [| n' IH]; intros m sign.
+  - simpl. reflexivity.
+  - replace (S n' + m)%nat with (S (n' + m))%nat by lia.
+    simpl alt_weights at 1 2. simpl app. simpl Nat.iter.
+    f_equal.
+    rewrite IH.
+    f_equal. f_equal.
+    (* Need: Nat.iter n' negb (negb sign) = negb (Nat.iter n' negb sign) *)
+    clear. induction n'; simpl; auto.
+    rewrite IHn'. reflexivity.
+Qed.
+
+Lemma iter_negb_even : forall n sign,
+  Nat.iter n negb sign = if Nat.even n then sign else negb sign.
+Proof.
+  induction n as [| n' IH]; intros sign.
+  - reflexivity.
+  - simpl Nat.iter. rewrite IH.
+    rewrite even_S_negb.
+    destruct (Nat.even n'), sign; reflexivity.
+Qed.
+
+Lemma alt_weights_app : forall n m sign,
+  alt_weights (n + m) sign = alt_weights n sign ++ alt_weights m (if Nat.even n then sign else negb sign).
+Proof.
+  intros. rewrite <- iter_negb_even. apply alt_weights_app_aux.
+Qed.
+
+(** Length of repeat *)
+Lemma repeat_length_eq : forall A (x : A) n, length (repeat x n) = n.
+Proof. intros. apply repeat_length. Qed.
+
+(** Dot product of alt_weights with threshold list equals alt_sum_first *)
 Lemma dot_alt_threshold : forall n h,
   (h <= n)%nat ->
   dot (alt_weights (S n) true) (map (fun k => (k <=? h)%nat) (seq 0%nat (S n))) =
   alt_sum_first h.
 Proof.
-  (* The key insight:
-     - The threshold list is [true, true, ..., true, false, ..., false] with h+1 trues
-     - Combined with alternating weights [1,-1,1,-1,...], dot = sum of first h+1 alternating values
-     - By alt_sum_first_correct, this equals 1 if h even, 0 if h odd *)
-Admitted.
+  intros n h Hle.
+  rewrite threshold_map_split by exact Hle.
+  replace (S n) with (S h + (n - h))%nat by lia.
+  rewrite alt_weights_app.
+  rewrite dot_app by (rewrite alt_weights_length, repeat_length; reflexivity).
+  rewrite dot_alt_prefix.
+  rewrite (dot_repeat_false' _ (n-h)%nat) by (apply alt_weights_length).
+  rewrite alt_sum_first_correct.
+  destruct (Nat.even h); lia.
+Qed.
 
 (** Direct approach: prove for the specific L1 output *)
 Lemma L2_concrete_correct : forall n xs,
