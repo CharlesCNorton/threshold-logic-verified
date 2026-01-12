@@ -4,88 +4,139 @@ Formally verified binary threshold networks with provable correctness guarantees
 
 ## Overview
 
-This project trains minimal neural networks on decidable tasks and formally proves their correctness in Coq. The networks use discrete weights and threshold activations, enabling exhaustive verification over all possible inputs.
+This project trains minimal neural networks on decidable tasks and formally proves their correctness in Coq. The networks use discrete weights and threshold activations, enabling complete verification.
+
+**Key result**: We provide a *fully constructive* proof that threshold networks can compute n-bit parity — not just for the trained 8-bit network, but for arbitrary input sizes. No `vm_compute` or enumeration; the proofs explain *why* the networks work through algebraic decomposition.
+
+## Proof Progression
+
+We developed 12 progressively more constructive proofs, culminating in a verified parametric network generator:
+
+| File | Approach | vm_compute |
+|------|----------|------------|
+| `V0_Core.v` | Core definitions + full 8→32→16→1 network | 1 × 256 |
+| `V1_Exhaustive.v` | Pruned 8→11→3→1 network | 1 × 256 |
+| `V2_AlwaysFireLemmas.v` | Always-fire neuron lemmas | 1 × 256 |
+| `V3_FlipProperty.v` | Bit-flip characterization | 1 × 256 |
+| `V4_PartiallyConstructive.v` | Partial constructive | 1 × 256 |
+| `V5_StructuredProof.v` | Modular structure | 1 × 256 |
+| `V6_HWClassDecomposition.v` | Hamming weight classes | 9 × ~30 |
+| `V7_AlgebraicInsights.v` | Key: g(x) ≡ HW(x) (mod 2) | 1 × 256 |
+| `V8_ABCDecomposition.v` | Pre-activation = A+B+C−3 | 2 × 256 |
+| `V9_FullyConstructive.v` | **8-bit fully constructive** | **0** |
+| `V10_Parametric.v` | Parametric algebraic property | **0** |
+| `V11_ParametricNetwork.v` | **Verified n-bit network generator** | **0** |
+
+## Key Theorems
+
+### V9: Why the trained 8-bit network works
+
+```coq
+Theorem network_correct : forall x0 x1 x2 x3 x4 x5 x6 x7,
+  network x0 x1 x2 x3 x4 x5 x6 x7 = parity [x0;x1;x2;x3;x4;x5;x6;x7].
+```
+
+The proof reveals the algebraic structure:
+- L2-N0, L2-N2 always fire (bias dominates negative weight sum)
+- L2-N1 fires iff Hamming weight is even (via g(x) ≡ HW(x) mod 2)
+- Output = NOT(L2-N1) = parity
+
+### V10: Universal algebraic property
+
+```coq
+Theorem dot_parity_equals_hw_parity : forall ws xs,
+  length ws = length xs ->
+  Z.even (signed_dot ws xs) = Nat.even (hamming_weight xs).
+```
+
+For ANY ±1 weight vector and ANY bit vector: dot product parity = Hamming weight parity.
+
+### V11: Verified n-bit parity network
+
+```coq
+Theorem parity_network_correct : forall xs,
+  parity_network xs = parity xs.
+
+Theorem concrete_eq_abstract : forall n xs,
+  length xs = n ->
+  parity_concrete n xs = parity_network xs.
+```
+
+Architecture for n-bit parity (n+3 neurons total):
+- **Layer 1**: n+1 neurons detecting HW ≥ k for k = 0,1,...,n
+- **Layer 2**: 1 neuron with alternating weights, fires iff HW even
+- **Output**: 1 neuron negating L2
 
 ## Architecture
 
-Binary threshold network with:
+Binary threshold network:
 - **Input**: n bits
 - **Weights**: ternary {-1, 0, +1}
 - **Biases**: bounded integers
 - **Activation**: Heaviside (threshold at 0)
 - **Output**: single bit
 
-## Models
+### Trained Networks
 
-### Full Network
-
-The original trained network for 8-bit parity.
-
-| Parameter | Value |
-|-----------|-------|
-| Architecture | 8 → 32 → 16 → 1 |
-| Total parameters | 833 |
-| Coq proof | `coq/ThresholdLogic.v` + `coq/Weights.v` |
-
-### Pruned Network
-
-Neuron ablation analysis revealed that only 11 of 32 Layer-1 neurons and 3 of 16 Layer-2 neurons are critical for correctness. Removing the redundant neurons yields a minimal subnetwork with identical behavior.
-
-| Parameter | Value |
-|-----------|-------|
-| Architecture | 8 → 11 → 3 → 1 |
-| Total parameters | 139 |
-| Reduction | 83.3% |
-| Coq proof | `coq/PrunedThresholdLogic.v` |
+| Variant | Architecture | Parameters | File |
+|---------|--------------|------------|------|
+| Full | 8 → 32 → 16 → 1 | 833 | `V0_Core.v` |
+| Pruned | 8 → 11 → 3 → 1 | 139 | `V1_Exhaustive.v` |
+| Parametric | 8 → n+1 → 1 → 1 | n+3 neurons | `V11_ParametricNetwork.v` |
 
 ## Project Structure
 
 ```
 threshold-logic-verified/
 ├── src/
-│   ├── model.py          # Network architecture
-│   ├── train.py          # Training script
-│   └── export_coq.py     # JSON to Coq converter
+│   ├── model.py              # Network architecture
+│   ├── train.py              # Gradient-based training
+│   ├── random_search.py      # Evolutionary search
+│   └── export_coq.py         # JSON to Coq converter
 ├── coq/
-│   ├── ThresholdLogic.v  # Core definitions
-│   ├── Weights.v         # Full network weights and proof
-│   └── PrunedThresholdLogic.v  # Pruned network (self-contained)
+│   ├── V0_Core.v             # Core definitions + full network
+│   ├── V1_Exhaustive.v       # Pruned network
+│   ├── V2-V8_*.v             # Proof progression
+│   ├── V9_FullyConstructive.v    # 8-bit constructive proof
+│   ├── V10_Parametric.v          # Parametric algebraic lemma
+│   ├── V11_ParametricNetwork.v   # Parametric network construction
+│   └── Weights.v             # Weight data module
 └── README.md
 ```
 
 ## Usage
 
-1. Train the network:
-   ```
-   python src/train.py --export weights.json
-   ```
+### Training
 
-2. Convert weights to Coq:
-   ```
-   python src/export_coq.py weights.json
-   ```
-
-3. Compile and verify:
-   ```
-   coqc coq/ThresholdLogic.v
-   coqc coq/Weights.v
-   coqc coq/PrunedThresholdLogic.v
-   ```
-
-## Verification
-
-Both networks are proven correct by exhaustive enumeration of all 256 possible 8-bit inputs. The main theorems establish that for every input, the network output equals the parity function.
-
-```coq
-Theorem network_verified :
-  forall xs, In xs (all_inputs 8) -> network xs = parity xs.
+```bash
+python src/random_search.py  # Evolutionary search (recommended)
+python src/train.py          # Gradient-based (harder to converge)
 ```
 
-Additional properties proven include bit-flip invariance: `network(NOT x) = network(x)`.
+### Verification
+
+```bash
+# Compile all proofs
+for f in coq/V*.v; do coqc "$f"; done
+
+# Or individual files
+coqc coq/V9_FullyConstructive.v   # 8-bit constructive
+coqc coq/V11_ParametricNetwork.v  # Parametric construction
+```
+
+## Related Work
+
+The mathematical result (parity ∈ TC⁰) is classical:
+- Parity computable by constant-depth threshold circuits (1988+)
+- Size-depth tradeoffs for threshold circuits well-studied
+
+The formalization approach appears novel:
+- No prior Coq/Lean/Isabelle mechanization of threshold circuits for parity found
+- End-to-end pipeline: train → export → verify → explain → generalize
 
 ## HuggingFace
 
-Trained weights are available at [phanerozoic/tiny-parity-prover](https://huggingface.co/phanerozoic/tiny-parity-prover).
+Trained weights: [phanerozoic/tiny-parity-prover](https://huggingface.co/phanerozoic/tiny-parity-prover)
 
 ## Requirements
 
