@@ -38,6 +38,21 @@ This project does not claim to discover new complexity-theoretic results. Rather
 2. An end-to-end pipeline from trained networks to verified proofs
 3. Constructive proofs that explain the algebraic structure underlying parity computation
 
+### Depth Bounds
+
+The minimum depth required to compute parity with threshold circuits is characterized in `DepthLowerBound.v`:
+
+**Depth 1 is impossible.** A single threshold gate cannot compute parity for n ≥ 2. The proof is algebraic: parity requires output 0 for inputs 00 and 11, but output 1 for inputs 01 and 10. These four constraints on any 2-input threshold gate yield a contradiction via linear arithmetic.
+
+**Depth 2 suffices.** A two-layer threshold circuit computes n-bit parity using n neurons:
+
+- Layer 1: n neurons computing "at least k bits set" for k = 1, ..., n
+- Layer 2: 1 neuron with alternating weights [+1, -1, +1, -1, ...] and bias -1
+
+The layer-1 output is a thermometer encoding of the Hamming weight. The layer-2 neuron computes an alternating sum that equals 1 when HW is even and 0 when HW is odd. With bias -1, it fires iff HW is even; negating gives parity.
+
+**Depth 3 is what we use.** The trained network has depth 3, which is not minimal. The evolutionary search found a working configuration without optimizing for depth. The verification methodology applies equally to depth-2 and depth-3 networks.
+
 ## Project Origin
 
 The project started with a practical question: can we train a small neural network to compute 8-bit parity and then prove it correct in Coq?
@@ -461,6 +476,7 @@ The construction uses n + 3 neurons total. This is not optimal—threshold circu
 | `V10_Parametric.v` | ~280 | Parametric algebraic property |
 | `V11_ParametricNetwork.v` | ~500 | Parametric network construction |
 | `Weights.v` | ~150 | Weight data for full network |
+| `DepthLowerBound.v` | ~260 | Depth-1 impossibility, depth-2 construction |
 
 ### Data Files
 
