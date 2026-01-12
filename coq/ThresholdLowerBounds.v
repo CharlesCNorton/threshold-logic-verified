@@ -1273,4 +1273,157 @@ Proof.
   apply Hpar. exact Hcv.
 Qed.
 
+(** ** Part 17: Communication Complexity - Partial Dot Products *)
+
+Definition dot_partial (ws : list Z) (xs : input) (start len : nat) : Z :=
+  dot (firstn len (skipn start ws)) (firstn len (skipn start xs)).
+
+Lemma dot_firstn_skipn : forall ws xs k,
+  length ws = length xs ->
+  (k <= length xs)%nat ->
+  dot ws xs = dot (firstn k ws) (firstn k xs) + dot (skipn k ws) (skipn k xs).
+Proof.
+  intros ws xs k Hlen Hk.
+  revert xs k Hlen Hk.
+  induction ws as [| w ws' IH]; intros xs k Hlen Hk.
+  - destruct xs; simpl in *.
+    + destruct k; reflexivity.
+    + discriminate.
+  - destruct xs as [| x xs']; simpl in *; [discriminate |].
+    destruct k as [| k'].
+    + simpl. lia.
+    + simpl.
+      injection Hlen as Hlen'.
+      specialize (IH xs' k' Hlen' ltac:(lia)).
+      destruct x; lia.
+Qed.
+
+(** For ternary weights, dot product is bounded by length - lower bound *)
+Lemma dot_ternary_lower : forall ws xs,
+  weights_bounded ws 1 ->
+  - Z.of_nat (length ws) <= dot ws xs.
+Proof.
+  intros ws. induction ws as [| w ws' IH]; intros xs Hbnd.
+  - simpl. lia.
+  - destruct xs as [| x xs'].
+    + simpl. inversion Hbnd; subst.
+      specialize (IH [] H2). simpl in IH. lia.
+    + inversion Hbnd as [| ? ? Hw Hws']; subst.
+      specialize (IH xs' Hws').
+      simpl dot. simpl length.
+      rewrite Nat2Z.inj_succ. unfold Z.succ.
+      destruct x; lia.
+Qed.
+
+(** For ternary weights, dot product is bounded by length - upper bound *)
+Lemma dot_ternary_upper : forall ws xs,
+  weights_bounded ws 1 ->
+  dot ws xs <= Z.of_nat (length ws).
+Proof.
+  intros ws. induction ws as [| w ws' IH]; intros xs Hbnd.
+  - simpl. lia.
+  - destruct xs as [| x xs'].
+    + simpl. inversion Hbnd; subst.
+      specialize (IH [] H2). simpl in IH. lia.
+    + inversion Hbnd as [| ? ? Hw Hws']; subst.
+      specialize (IH xs' Hws').
+      simpl dot. simpl length.
+      rewrite Nat2Z.inj_succ. unfold Z.succ.
+      destruct x; lia.
+Qed.
+
+(** Combined: ternary dot product is in [-n, n] *)
+Lemma dot_ternary_range : forall ws xs,
+  weights_bounded ws 1 ->
+  - Z.of_nat (length ws) <= dot ws xs <= Z.of_nat (length ws).
+Proof.
+  intros ws xs Hbnd.
+  split.
+  - apply dot_ternary_lower. exact Hbnd.
+  - apply dot_ternary_upper. exact Hbnd.
+Qed.
+
+(** Corollary: dot product takes at most 2n+1 distinct values *)
+Lemma dot_distinct_values : forall ws xs,
+  weights_bounded ws 1 ->
+  exists v : Z, dot ws xs = v /\
+    - Z.of_nat (length ws) <= v <= Z.of_nat (length ws).
+Proof.
+  intros ws xs Hbnd.
+  exists (dot ws xs).
+  split; [reflexivity | apply dot_ternary_range; exact Hbnd].
+Qed.
+
+(** ** Part 18: Communication Protocol Simulation *)
+
+(**
+   KEY INSIGHT for Ω(n/log n):
+
+   Consider input x = (x_A, x_B) split between Alice (first n/2 bits)
+   and Bob (remaining n/2 bits).
+
+   For a single gate with ternary weights:
+   - Alice computes dot(w_A, x_A) which is in [-n/2, n/2]
+   - She can send this value using O(log n) bits
+   - Bob receives it, adds his part: dot(w_A, x_A) + dot(w_B, x_B) + b
+   - Bob can determine if the gate fires
+
+   With k layer-1 gates:
+   - Alice sends k values, each O(log n) bits
+   - Total communication: O(k log n) bits
+
+   But parity(x) = parity(x_A) XOR parity(x_B) requires Ω(n) bits
+   of communication (it's essentially the inner product function).
+
+   Therefore: k * log(n) >= Ω(n), so k >= Ω(n / log n).
+*)
+
+(** Alice's partial computation for one gate *)
+Definition alice_partial (ws : list Z) (xs_A : input) (half : nat) : Z :=
+  dot (firstn half ws) xs_A.
+
+(** Bob can determine gate output given Alice's message *)
+Lemma bob_determines_gate : forall ws b xs half,
+  length xs = (2 * half)%nat ->
+  length ws = (2 * half)%nat ->
+  let xs_A := firstn half xs in
+  let xs_B := skipn half xs in
+  let msg := alice_partial ws xs_A half in
+  gate ws b xs = Z.geb (msg + dot (skipn half ws) xs_B + b) 0.
+Proof.
+  intros ws b xs half Hxlen Hwlen xs_A xs_B msg.
+  unfold gate, msg, alice_partial, xs_A, xs_B.
+  f_equal.
+  rewrite dot_firstn_skipn with (k := half) by lia.
+  ring.
+Qed.
+
+(** Helper: firstn preserves weight bound *)
+Lemma weights_bounded_firstn : forall ws W k,
+  weights_bounded ws W ->
+  weights_bounded (firstn k ws) W.
+Proof.
+  intros ws W k Hbnd.
+  revert k. induction ws as [| w ws' IH]; intros k.
+  - simpl. destruct k; constructor.
+  - destruct k; simpl.
+    + constructor.
+    + inversion Hbnd; subst. constructor; [assumption | apply IH; assumption].
+Qed.
+
+(** Alice's message is bounded, hence can be sent with O(log n) bits *)
+Lemma alice_message_bounded : forall ws xs_A half,
+  weights_bounded ws 1 ->
+  (half <= length ws)%nat ->
+  - Z.of_nat half <= alice_partial ws xs_A half <= Z.of_nat half.
+Proof.
+  intros ws xs_A half Hbnd Hhalf.
+  unfold alice_partial.
+  pose proof (weights_bounded_firstn ws 1 half Hbnd) as Hfirst.
+  pose proof (dot_ternary_range (firstn half ws) xs_A Hfirst) as [Hlo Hhi].
+  assert (Hflen: length (firstn half ws) = half) by (apply firstn_length_le; lia).
+  rewrite Hflen in Hlo, Hhi.
+  split; assumption.
+Qed.
+
 Close Scope Z_scope.
