@@ -32,7 +32,12 @@ Require Import Coq.micromega.Lia.
 Require Import Coq.Logic.Classical_Prop.
 Require Import Coq.Setoids.Setoid.
 Require Import Coq.Classes.Morphisms.
+Require Import Coq.Reals.Reals.
+Require Import Coq.Reals.Rpower.
+Require Import Coq.micromega.Lra.
 Import ListNotations.
+
+Definition bool_id (b : bool) : bool := b.
 
 Open Scope Z_scope.
 
@@ -475,9 +480,9 @@ Qed.
 Definition parity_vector (n : nat) : list bit :=
   map parity (all_inputs n).
 
-(** Helper: filter id on map extracts elements where f is true *)
+(** Helper: filter bool_id on map extracts elements where f is true *)
 Lemma filter_id_map : forall {A : Type} (f : A -> bool) (l : list A),
-  length (filter id (map f l)) = length (filter f l).
+  length (filter bool_id (map f l)) = length (filter f l).
 Proof.
   intros A f l.
   induction l as [| a l' IH]; simpl.
@@ -600,7 +605,7 @@ Qed.
 
 (** Count of odd-parity inputs equals count of even-parity inputs *)
 Lemma parity_balanced : forall n, (n >= 1)%nat ->
-  length (filter id (parity_vector n)) = Nat.pow 2 (Nat.sub n 1).
+  length (filter bool_id (parity_vector n)) = Nat.pow 2 (Nat.sub n 1).
 Proof.
   intros n Hn.
   unfold parity_vector.
@@ -1426,4 +1431,211 @@ Proof.
   split; assumption.
 Qed.
 
+Definition alice_messages (gates : list (list Z * Z)) (xs : input) (half : nat) : list Z :=
+  map (fun wb => alice_partial (fst wb) (firstn half xs) half) gates.
+
+Lemma same_alice_same_gate : forall ws b xs ys half,
+  length xs = (2 * half)%nat ->
+  length ys = (2 * half)%nat ->
+  length ws = (2 * half)%nat ->
+  skipn half xs = skipn half ys ->
+  alice_partial ws (firstn half xs) half = alice_partial ws (firstn half ys) half ->
+  gate ws b xs = gate ws b ys.
+Proof.
+  intros ws b xs ys half Hxlen Hylen Hwlen Hbob Halice.
+  unfold gate. f_equal.
+  rewrite (dot_firstn_skipn ws xs half) by lia.
+  rewrite (dot_firstn_skipn ws ys half) by lia.
+  unfold alice_partial in Halice.
+  rewrite Halice, Hbob. reflexivity.
+Qed.
+
+Lemma same_messages_same_layer1 : forall gates xs ys half,
+  length xs = (2 * half)%nat ->
+  length ys = (2 * half)%nat ->
+  Forall (fun wb => length (fst wb) = (2 * half)%nat) gates ->
+  skipn half xs = skipn half ys ->
+  alice_messages gates xs half = alice_messages gates ys half ->
+  map (fun wb => gate (fst wb) (snd wb) xs) gates =
+  map (fun wb => gate (fst wb) (snd wb) ys) gates.
+Proof.
+  intros gates xs ys half Hxlen Hylen Hglen Hbob Halice.
+  induction gates as [| g gates' IH].
+  - reflexivity.
+  - simpl in *. inversion Hglen as [| ? ? Hg Hgates']; subst.
+    injection Halice as Hg_alice Hrest. f_equal.
+    + apply (same_alice_same_gate (fst g) (snd g) xs ys half); assumption.
+    + apply IH; assumption.
+Qed.
+
+Lemma parity_xor_halves : forall xs half,
+  length xs = (2 * half)%nat ->
+  parity xs = xorb (parity (firstn half xs)) (parity (skipn half xs)).
+Proof.
+  intros xs half Hlen.
+  rewrite <- (firstn_skipn half xs) at 1.
+  rewrite parity_app. reflexivity.
+Qed.
+
+Lemma alice_parity_determines : forall xs ys half,
+  length xs = (2 * half)%nat ->
+  length ys = (2 * half)%nat ->
+  skipn half xs = skipn half ys ->
+  parity (firstn half xs) <> parity (firstn half ys) ->
+  parity xs <> parity ys.
+Proof.
+  intros xs ys half Hxlen Hylen Hbob Halice_diff.
+  rewrite (parity_xor_halves xs half Hxlen).
+  rewrite (parity_xor_halves ys half Hylen).
+  rewrite Hbob. intro Heq. apply Halice_diff.
+  destruct (parity (firstn half xs)), (parity (firstn half ys)),
+           (parity (skipn half ys)); simpl in Heq; try discriminate; reflexivity.
+Qed.
+
+Theorem message_collision_contradiction : forall c xs ys half,
+  circuit_computes_parity c ->
+  n_inputs c = (2 * half)%nat ->
+  length xs = (2 * half)%nat ->
+  length ys = (2 * half)%nat ->
+  Forall (fun wb => length (fst wb) = (2 * half)%nat) (layer1_weights c) ->
+  skipn half xs = skipn half ys ->
+  alice_messages (layer1_weights c) xs half =
+  alice_messages (layer1_weights c) ys half ->
+  parity (firstn half xs) <> parity (firstn half ys) ->
+  False.
+Proof.
+  intros c xs ys half Hcomp Hn Hxlen Hylen Hglen Hbob Hmsg Halice_diff.
+  assert (Hpar_diff : parity xs <> parity ys).
+  { apply (alice_parity_determines xs ys half); assumption. }
+  assert (Hlayer1_eq : eval_layer1 c xs = eval_layer1 c ys).
+  { unfold eval_layer1.
+    apply (same_messages_same_layer1 (layer1_weights c) xs ys half); assumption. }
+  assert (Hout_eq : eval_depth2 c xs = eval_depth2 c ys).
+  { unfold eval_depth2. rewrite Hlayer1_eq. reflexivity. }
+  unfold circuit_computes_parity in Hcomp. rewrite Hn in Hcomp.
+  rewrite (Hcomp xs Hxlen) in Hout_eq. rewrite (Hcomp ys Hylen) in Hout_eq.
+  apply Hpar_diff. exact Hout_eq.
+Qed.
+
+Open Scope R_scope.
+
+Definition log2 (x : R) : R := ln x / ln 2.
+
+Lemma ln_2_pos : ln 2 > 0.
+Proof. rewrite <- ln_1. apply ln_increasing. lra. lra. Qed.
+
+Lemma log2_pow2 : forall n : nat, log2 (2 ^ n) = INR n.
+Proof.
+  intros n. unfold log2. rewrite ln_pow.
+  - field. apply Rgt_not_eq. apply ln_2_pos.
+  - lra.
+Qed.
+
+Lemma ln_le_compat : forall x y : R, 0 < x -> x <= y -> ln x <= ln y.
+Proof.
+  intros x y Hx Hxy.
+  destruct (Rle_lt_or_eq_dec x y Hxy) as [Hlt | Heq].
+  - left. apply ln_increasing; assumption.
+  - right. rewrite Heq. reflexivity.
+Qed.
+
+Lemma log2_increasing : forall x y : R, 0 < x -> x <= y -> log2 x <= log2 y.
+Proof.
+  intros x y Hx Hxy. unfold log2. apply Rmult_le_compat_r.
+  - left. apply Rinv_0_lt_compat. apply ln_2_pos.
+  - apply ln_le_compat; assumption.
+Qed.
+
+Lemma message_space_bound : forall half k : nat,
+  (half >= 1)%nat ->
+  INR k * log2 (INR (S (2 * half))) >= log2 (INR (Nat.pow (S (2 * half)) k)).
+Proof.
+  intros half k Hhalf. rewrite pow_INR. unfold log2. rewrite ln_pow.
+  - unfold Rdiv. rewrite Rmult_assoc. lra.
+  - apply lt_0_INR. lia.
+Qed.
+
+Lemma nat_pow_pos : forall base exp : nat, (base >= 1)%nat -> (Nat.pow base exp >= 1)%nat.
+Proof. intros base exp Hbase. induction exp; simpl; lia. Qed.
+
+Lemma lower_bound_from_messages : forall half k : nat,
+  (half >= 1)%nat ->
+  (Nat.pow (S (2 * half)) k >= Nat.pow 2 half)%nat ->
+  INR k * log2 (INR (S (2 * half))) >= INR half.
+Proof.
+  intros half k Hhalf Hpow. apply Rle_ge.
+  apply Rle_trans with (r2 := log2 (INR (Nat.pow 2 half))).
+  - rewrite pow_INR. rewrite log2_pow2. lra.
+  - apply Rle_trans with (r2 := log2 (INR (Nat.pow (S (2 * half)) k))).
+    + apply log2_increasing.
+      * apply lt_0_INR. pose proof (nat_pow_pos 2 half). lia.
+      * apply le_INR. exact Hpow.
+    + pose proof (message_space_bound half k Hhalf). lra.
+Qed.
+
+Theorem gates_lower_bound : forall half k : nat,
+  (half >= 1)%nat ->
+  (Nat.pow (S (2 * half)) k >= Nat.pow 2 half)%nat ->
+  log2 (INR (S (2 * half))) > 0 ->
+  INR k >= INR half / log2 (INR (S (2 * half))).
+Proof.
+  intros half k Hhalf Hpow Hlog_pos.
+  pose proof (lower_bound_from_messages half k Hhalf Hpow) as H.
+  unfold Rdiv. apply Rle_ge.
+  apply Rmult_le_reg_r with (r := log2 (INR (S (2 * half)))).
+  - exact Hlog_pos.
+  - rewrite Rmult_assoc.
+    rewrite Rinv_l by (apply Rgt_not_eq; exact Hlog_pos).
+    rewrite Rmult_1_r. apply Rge_le in H.
+    rewrite Rmult_comm in H. rewrite Rmult_comm. exact H.
+Qed.
+
+Lemma ln_gt_0 : forall x : R, x > 1 -> ln x > 0.
+Proof. intros x Hx. rewrite <- ln_1. apply ln_increasing; lra. Qed.
+
+Lemma log2_pos_for_ge3 : forall m : nat, (m >= 3)%nat -> log2 (INR m) > 0.
+Proof.
+  intros m Hm. unfold log2. apply Rmult_pos_pos.
+  - apply ln_gt_0. apply lt_1_INR. lia.
+  - apply Rinv_0_lt_compat. apply ln_2_pos.
+Qed.
+
+Theorem omega_n_over_log_n : forall half k : nat,
+  (half >= 1)%nat ->
+  (Nat.pow (S (2 * half)) k >= Nat.pow 2 half)%nat ->
+  INR k >= INR half / log2 (INR (S (2 * half))).
+Proof.
+  intros half k Hhalf Hpow.
+  assert (Hlog_pos : log2 (INR (S (2 * half))) > 0).
+  { apply log2_pos_for_ge3. lia. }
+  apply (gates_lower_bound half k Hhalf Hpow Hlog_pos).
+Qed.
+
+Lemma n8_bound : forall k : nat,
+  (Nat.pow 9 k >= Nat.pow 2 4)%nat ->
+  INR k >= INR 4 / log2 (INR 9).
+Proof.
+  intros k Hpow. apply (omega_n_over_log_n 4 k); [lia | exact Hpow].
+Qed.
+
+Lemma n8_1_gate_insufficient : (Nat.pow 9 1 < Nat.pow 2 4)%nat.
+Proof. vm_compute. lia. Qed.
+
+Lemma n8_2_gates_sufficient : (Nat.pow 9 2 >= Nat.pow 2 4)%nat.
+Proof. vm_compute. lia. Qed.
+
+Lemma n16_bound : forall k : nat,
+  (Nat.pow 17 k >= Nat.pow 2 8)%nat ->
+  INR k >= INR 8 / log2 (INR 17).
+Proof.
+  intros k Hpow. apply (omega_n_over_log_n 8 k); [lia | exact Hpow].
+Qed.
+
+Lemma n16_1_gate_insufficient : (Nat.pow 17 1 < Nat.pow 2 8)%nat.
+Proof. vm_compute. lia. Qed.
+
+Lemma n16_2_gates_sufficient : (Nat.pow 17 2 >= Nat.pow 2 8)%nat.
+Proof. vm_compute. lia. Qed.
+
+Close Scope R_scope.
 Close Scope Z_scope.
